@@ -8,6 +8,10 @@ ring normally**.
 
 - Works with any app (Telegram, WhatsApp, Signal, SMS, mail…). You don't change any app's settings.
 - A separate timer for each person or chat in each app, 30 s – 60 min (default 5 min).
+- Silenced messages are collected in **one silent card per person**. Pull it down to read the whole
+  burst, reply, mute the person for an hour or make them always ring.
+- Big mode buttons: **One ping** / **Everyone rings** / **Silence for 15 min**. There is also a
+  **Quick Settings tile** that pauses OnePing for an hour.
 - No internet permission, no analytics. All data stays on the phone.
 - Android 10+ (`minSdk 29`). Tested on a Google Pixel 8a with Android 17.
 
@@ -23,10 +27,10 @@ ring normally**.
    ```bash
    adb install -r app/build/outputs/apk/debug/app-debug.apk
    ```
-4. **Open OnePing → Setup** and grant:
+4. **Open OnePing.** The **Finish setup** card on the home screen asks for:
    - **Notification access.** If it is greyed out ("Restricted setting"), go to
      App info → ⋮ → **Allow restricted settings** and try again.
-   - **Notifications.** They are needed to show the silent copies.
+   - **Notifications.** Silenced messages are collected in a silent card.
    - **Unrestricted battery.** This keeps Android from killing the service.
 
 Then ask a friend to send you 5 messages in a row: you should hear only one.
@@ -36,6 +40,6 @@ Then ask a friend to send you 5 messages in a row: you should hear only one.
 | | |
 |---|---|
 | [How it works](docs/how-it-works.md) | How repeats are silenced, how sources and new messages are detected |
-| [Usage](docs/usage.md) | Settings, per-source rules, the log, testing, troubleshooting |
+| [Usage](docs/usage.md) | Home and People screens, the silent card, the tile, testing, troubleshooting |
 | [Building](docs/building.md) | Requirements, build commands, source layout |
 | [Limitations](docs/limitations.md) | Known trade-offs and why the system "assistant" approach isn't used |

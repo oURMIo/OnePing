@@ -8,10 +8,13 @@ import com.oneping.data.MAX_COOLDOWN_SEC
 import com.oneping.data.Repository
 import com.oneping.data.RuleMode
 import com.oneping.data.SenderRule
+import com.oneping.data.SourceStats
+import com.oneping.data.TodayStats
 import com.oneping.data.clampCooldown
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
+import java.util.Calendar
 
 /**
  * Decides, per source (person/chat in a given app), whether a notification may make a sound.
@@ -42,6 +45,7 @@ class CooldownEngine(
     private val seen = HashMap<String, Seen>()
     private val lastSignals = HashMap<String, Long>()
     private val seenApps = HashSet<String>()
+    private var stats = TodayStats()
 
     /** Loads persisted state and keeps settings/rules in sync. Call once, before any [decide]. */
     suspend fun load(scope: CoroutineScope) {
@@ -49,9 +53,11 @@ class CooldownEngine(
         rules = repository.rules.first()
         val signals = repository.loadLastSignals()
         val apps = repository.loadSeenApps().keys
+        val savedStats = repository.loadTodayStats()
         synchronized(this) {
             lastSignals.putAll(signals)
             seenApps.addAll(apps)
+            stats = savedStats
         }
         scope.launch { repository.settings.collect { settings = it } }
         scope.launch { repository.rules.collect { rules = it } }
@@ -74,7 +80,7 @@ class CooldownEngine(
     fun decide(s: Snapshot, canAlert: Boolean, note: String = ""): Verdict {
         val now = clock()
         if (seenApps.add(s.pkg)) ioScope.launch { repository.markAppSeen(s.pkg, now) }
-        if (!settings.isMonitored(s.pkg)) return Verdict.PASS
+        if (!settings.isMonitored(s.pkg) || settings.isPaused(now)) return Verdict.PASS
 
         val prev = seen[s.key]
         seen[s.key] = s.toSeen(prev)
@@ -85,10 +91,12 @@ class CooldownEngine(
         } * 1000L
         val elapsed = lastSignals[s.key]?.let { now - it } ?: Long.MAX_VALUE
         val inCooldown = rule.mode != RuleMode.ALWAYS && elapsed < cooldownMs
+        val silenceAll = settings.isSilencingAll(now)
+        val muted = rule.mode == RuleMode.MUTED || rule.isTemporarilyMuted(now) || silenceAll
 
         if (!isNewMessage(prev, s) || s.latestFromSelf) {
             // Same message re-posted / edited / own reply: never let it ring during a cooldown.
-            return if (canAlert && (inCooldown || rule.mode == RuleMode.MUTED)) Verdict.SILENCE else Verdict.PASS
+            return if (canAlert && (inCooldown || muted)) Verdict.SILENCE else Verdict.PASS
         }
 
         val sender = KnownSender(s.key, s.pkg, s.name, s.isGroup, now)
@@ -98,27 +106,51 @@ class CooldownEngine(
         }
 
         val (decision, detail) = when {
-            rule.mode == RuleMode.MUTED -> Decision.MUTED to note
+            muted -> Decision.MUTED to listOf(if (silenceAll) "everyone silenced" else "", note)
+                .filter { it.isNotEmpty() }.joinToString(" · ")
             inCooldown -> Decision.COOLDOWN to listOf("${remaining(cooldownMs - elapsed)} left", note)
                 .filter { it.isNotEmpty() }.joinToString(" · ")
             else -> Decision.ALERTED to ""
         }
         if (decision == Decision.ALERTED) lastSignals[s.key] = now
         lastSignals.entries.removeAll { now - it.value > MAX_COOLDOWN_SEC * 2000L }
-        persist(sender, LogEvent(now, s.pkg, s.name, decision, detail))
+        countToday(s, rang = decision == Decision.ALERTED, now)
+        persist(sender, LogEvent(now, s.pkg, s.name, decision, detail), withStats = true)
         return if (decision == Decision.ALERTED) Verdict.PASS else Verdict.SILENCE
     }
 
     /** The user looked at the notification: the next message from this source alerts right away. */
     @Synchronized
-    fun reset(s: Snapshot, why: String) {
-        if (lastSignals.remove(s.key) == null) return
-        persist(sender = null, LogEvent(clock(), s.pkg, s.name, Decision.RESET, why))
+    fun reset(key: String, pkg: String, name: String, why: String) {
+        if (lastSignals.remove(key) == null) return
+        persist(sender = null, LogEvent(clock(), pkg, name, Decision.RESET, why))
     }
 
-    private fun persist(sender: KnownSender?, event: LogEvent?) {
+    private fun countToday(s: Snapshot, rang: Boolean, now: Long) {
+        val day = dayOf(now)
+        val base = if (stats.day == day) stats else TodayStats(day = day)
+        val old = base.sources[s.key]
+        val updated = SourceStats(
+            key = s.key, pkg = s.pkg, name = s.name,
+            messages = (old?.messages ?: 0) + 1,
+            rang = (old?.rang ?: 0) + if (rang) 1 else 0,
+            lastTime = now,
+        )
+        stats = base.copy(
+            silenced = base.silenced + if (rang) 0 else 1,
+            sources = base.sources + (s.key to updated),
+        )
+    }
+
+    private fun persist(sender: KnownSender?, event: LogEvent?, withStats: Boolean = false) {
         val signals = HashMap(lastSignals)
-        ioScope.launch { repository.record(signals, sender, event) }
+        val statsCopy = if (withStats) stats else null
+        ioScope.launch { repository.record(signals, sender, event, statsCopy) }
+    }
+
+    private fun dayOf(millis: Long): Int = Calendar.getInstance().run {
+        timeInMillis = millis
+        get(Calendar.YEAR) * 10000 + (get(Calendar.MONTH) + 1) * 100 + get(Calendar.DAY_OF_MONTH)
     }
 
     private fun isNewMessage(prev: Seen?, s: Snapshot): Boolean {

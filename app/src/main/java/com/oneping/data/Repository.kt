@@ -7,6 +7,7 @@ import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.intPreferencesKey
+import androidx.datastore.preferences.core.longPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
 import kotlinx.coroutines.flow.Flow
@@ -24,7 +25,9 @@ class Repository private constructor(context: Context) {
     private object Keys {
         val globalCooldown = intPreferencesKey("global_cooldown_sec")
         val resetOnDismiss = booleanPreferencesKey("reset_on_dismiss")
-        val resetOnAppCancel = booleanPreferencesKey("reset_on_app_cancel")
+        val pausedUntil = longPreferencesKey("paused_until")
+        val silenceAllUntil = longPreferencesKey("silence_all_until")
+        val stats = stringPreferencesKey("today_stats_json")
         val monitorNewApps = booleanPreferencesKey("monitor_new_apps")
         val appOverrides = stringPreferencesKey("app_overrides_json")
         val seenApps = stringPreferencesKey("seen_apps_json")
@@ -37,8 +40,9 @@ class Repository private constructor(context: Context) {
     val settings: Flow<AppSettings> = store.data.map { p ->
         AppSettings(
             globalCooldownSec = (p[Keys.globalCooldown] ?: DEFAULT_COOLDOWN_SEC).clampCooldown(),
-            resetOnUserDismiss = p[Keys.resetOnDismiss] ?: false,
-            resetOnAppCancel = p[Keys.resetOnAppCancel] ?: false,
+            resetWhenSeen = p[Keys.resetOnDismiss] ?: false,
+            pausedUntil = p[Keys.pausedUntil] ?: 0L,
+            silenceAllUntil = p[Keys.silenceAllUntil] ?: 0L,
             monitorNewApps = p[Keys.monitorNewApps] ?: true,
             appOverrides = JsonCodec.decodeBoolMap(p[Keys.appOverrides]),
         )
@@ -61,13 +65,27 @@ class Repository private constructor(context: Context) {
     val log: Flow<List<LogEvent>> =
         store.data.map { JsonCodec.decodeLog(it[Keys.log]) }.distinctUntilChanged()
 
+    val todayStats: Flow<TodayStats> =
+        store.data.map { JsonCodec.decodeStats(it[Keys.stats]) }.distinctUntilChanged()
+
     // ---- settings ----
 
     suspend fun setGlobalCooldown(sec: Int) = store.edit { it[Keys.globalCooldown] = sec.clampCooldown() }
 
-    suspend fun setResetOnUserDismiss(value: Boolean) = store.edit { it[Keys.resetOnDismiss] = value }
+    suspend fun setResetWhenSeen(value: Boolean) = store.edit { it[Keys.resetOnDismiss] = value }
 
-    suspend fun setResetOnAppCancel(value: Boolean) = store.edit { it[Keys.resetOnAppCancel] = value }
+    /** Pause until [until] (epoch ms); 0 resumes. */
+    suspend fun setPausedUntil(until: Long) = store.edit {
+        it[Keys.pausedUntil] = until
+        if (until > 0) it[Keys.silenceAllUntil] = 0L
+    }
+
+    /** Switches the home screen mode; the two timed modes exclude each other. */
+    suspend fun setMode(mode: Mode) = store.edit {
+        val now = System.currentTimeMillis()
+        it[Keys.pausedUntil] = if (mode == Mode.EVERYONE_RINGS) FOREVER else 0L
+        it[Keys.silenceAllUntil] = if (mode == Mode.SILENCE_ALL) now + SILENCE_ALL_MS else 0L
+    }
 
     suspend fun setMonitorNewApps(value: Boolean) = store.edit { it[Keys.monitorNewApps] = value }
 
@@ -78,7 +96,15 @@ class Repository private constructor(context: Context) {
 
     suspend fun setRule(key: String, rule: SenderRule) = store.edit { p ->
         val rules = JsonCodec.decodeRules(p[Keys.rules]).toMutableMap()
-        if (rule.mode == RuleMode.DEFAULT) rules.remove(key) else rules[key] = rule
+        if (rule.isDefault) rules.remove(key) else rules[key] = rule
+        p[Keys.rules] = JsonCodec.encodeRules(rules)
+    }
+
+    /** Changes one source's rule in place (keeps the other fields). */
+    suspend fun updateRule(key: String, change: (SenderRule) -> SenderRule) = store.edit { p ->
+        val rules = JsonCodec.decodeRules(p[Keys.rules]).toMutableMap()
+        val rule = change(rules[key] ?: SenderRule())
+        if (rule.isDefault) rules.remove(key) else rules[key] = rule
         p[Keys.rules] = JsonCodec.encodeRules(rules)
     }
 
@@ -95,6 +121,8 @@ class Repository private constructor(context: Context) {
 
     suspend fun loadSeenApps(): Map<String, Long> = seenApps.first()
 
+    suspend fun loadTodayStats(): TodayStats = todayStats.first()
+
     /**
      * Persists one processed notification in a single DataStore transaction:
      * cooldown map, seen sender and (optionally) a log entry.
@@ -103,8 +131,10 @@ class Repository private constructor(context: Context) {
         lastSignals: Map<String, Long>,
         sender: KnownSender?,
         event: LogEvent?,
+        stats: TodayStats? = null,
     ) = store.edit { p ->
         p[Keys.lastSignals] = JsonCodec.encodeLongMap(lastSignals)
+        if (stats != null) p[Keys.stats] = JsonCodec.encodeStats(stats)
         if (sender != null) upsertSender(p, sender)
         if (event != null) {
             p[Keys.log] = JsonCodec.encodeLog((listOf(event) + JsonCodec.decodeLog(p[Keys.log])).take(LOG_SIZE))

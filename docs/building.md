@@ -43,12 +43,14 @@ app/src/main/java/com/oneping/
 ├── data/
 │   ├── Models.kt                  settings, rules, sources, log entries
 │   ├── JsonCodec.kt               JSON (de)serialization for DataStore
-│   └── Repository.kt              DataStore: settings, rules, timers, sources, apps, log
+│   └── Repository.kt              DataStore: settings, rules, timers, sources, apps, stats, log
 ├── engine/
 │   ├── NotificationParser.kt      notification → source key + message state
 │   └── CooldownEngine.kt          new-message detection, per-source cooldown, log
 ├── service/
-│   ├── ListenerService.kt         judges notifications, cancel + copy, resets
-│   └── MirrorNotifier.kt          silent copies of cancelled notifications
-└── ui/                            Compose screens: Setup, Settings, Sources, Log
+│   ├── ListenerService.kt         judges notifications, cancels repeats, resets
+│   ├── SilentCards.kt             one silent conversation card per source
+│   ├── CardActionReceiver.kt      "Mute 1 h" / "Always ring" buttons
+│   └── PauseTileService.kt        Quick Settings tile: pause for 1 hour
+└── ui/                            Compose screens: Home, People
 ```

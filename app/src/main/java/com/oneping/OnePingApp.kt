@@ -4,6 +4,7 @@ import android.app.Application
 import android.content.Context
 import com.oneping.data.Repository
 import com.oneping.engine.CooldownEngine
+import com.oneping.service.SilentCards
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -16,6 +17,9 @@ class OnePingApp : Application() {
 
     lateinit var engine: CooldownEngine
         private set
+
+    /** Silent conversation cards; created on first use (needs the notification service). */
+    val cards: SilentCards by lazy { SilentCards(this) }
 
     override fun onCreate() {
         super.onCreate()
@@ -33,5 +37,7 @@ class OnePingApp : Application() {
         val listenerConnected = MutableStateFlow(false)
 
         fun engine(context: Context): CooldownEngine = (context.applicationContext as OnePingApp).engine
+
+        fun cards(context: Context): SilentCards = (context.applicationContext as OnePingApp).cards
     }
 }

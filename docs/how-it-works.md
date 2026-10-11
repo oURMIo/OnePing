@@ -12,9 +12,22 @@ gets every notification the moment it is posted.
 - **A repeat** inside the quiet period:
   1. is **cancelled** immediately. The system stops its sound and vibration at that moment. Measured
      on a Pixel 8a, the sound is cut off about **30 ms** after it starts;
-  2. is re-posted as a **silent copy** on OnePing's own silent channel (`service/MirrorNotifier.kt`).
-     The copy keeps the title, the text or messages, the avatar, the tap action and the action buttons,
-     including inline reply.
+  2. is added to that source's **silent card** (`service/SilentCards.kt`).
+
+## The silent card
+
+- **One card per source.** When a repeat is silenced, every original notification from that source
+  is cancelled. The card then shows the conversation.
+- **Its own history.** OnePing keeps the last 25 messages of each source, so the card shows the whole
+  burst even if the app itself only shows its latest few messages.
+- **Contents.** The card is a real conversation (`MessagingStyle`) with the person's name and avatar.
+  The sub-text gives the app and the counts, e.g. "Telegram · 5 messages, 4 silenced".
+- **Buttons:** **Reply** (if the app offers it), **Mute 1 h** and **Always ring**.
+- **Grouping.** Cards from the same app are grouped in the shade.
+- **When it goes away:**
+  - Opening or dismissing the card, or reading the chat in the app, removes the card and its history.
+  - When the source rings again after its quiet period, the card hides and the app's own notification
+    takes over.
 
 ## Decision logic (`engine/`)
 
@@ -39,8 +52,10 @@ gets every notification the moment it is posted.
 
    | Condition | Result |
    |---|---|
-   | The source's rule is "Always silent" | silence |
-   | The source's rule is "Always alert" | ring |
+   | Mode "Everyone rings", or paused from the tile | ring |
+   | Mode "Silence" (15 min) | silence |
+   | The source's rule is "Always silent", or it is muted for 1 h | silence |
+   | The source's rule is "Always ring" | ring |
    | Less time than the quiet period has passed since this source last rang | silence |
    | Otherwise | ring, and the source's timer restarts |
 
@@ -51,10 +66,12 @@ gets every notification the moment it is posted.
 
 ## Timer resets (optional)
 
-With **Reset the timer when I've seen it** turned on, opening or swiping away a notification
-(`REASON_CLICK` / `REASON_CANCEL`) clears that source's timer, so the next message rings right away.
-A second switch also counts the app clearing its own notification (`REASON_APP_CANCEL`, for example
-when the chat was read on another device).
+With **Reset when I've seen it** turned on, the source's timer is cleared when you:
+
+- open or swipe away its notification or card (`REASON_CLICK` / `REASON_CANCEL`);
+- read the chat, so the app clears its own notification (`REASON_APP_CANCEL`).
+
+The next message from that source then rings right away.
 
 ## Privacy
 

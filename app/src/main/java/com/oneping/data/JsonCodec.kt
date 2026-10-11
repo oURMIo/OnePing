@@ -22,7 +22,11 @@ internal object JsonCodec {
 
     fun encodeRules(rules: Map<String, SenderRule>): String = JSONObject().apply {
         rules.forEach { (key, rule) ->
-            put(key, JSONObject().put("mode", rule.mode.name).put("cooldown", rule.customCooldownSec))
+            put(
+                key,
+                JSONObject().put("mode", rule.mode.name).put("cooldown", rule.customCooldownSec)
+                    .put("mutedUntil", rule.mutedUntil),
+            )
         }
     }.toString()
 
@@ -32,6 +36,7 @@ internal object JsonCodec {
             SenderRule(
                 mode = enumOr(r.optString("mode"), RuleMode.DEFAULT),
                 customCooldownSec = r.optInt("cooldown", DEFAULT_COOLDOWN_SEC),
+                mutedUntil = r.optLong("mutedUntil"),
             )
         }
     } ?: emptyMap()
@@ -73,6 +78,32 @@ internal object JsonCodec {
             detail = o.optString("x"),
         )
     }
+
+    fun encodeStats(stats: TodayStats): String = JSONObject().apply {
+        put("day", stats.day)
+        put("silenced", stats.silenced)
+        put("sources", JSONArray().apply {
+            stats.sources.values.forEach {
+                put(
+                    JSONObject().put("key", it.key).put("pkg", it.pkg).put("name", it.name)
+                        .put("n", it.messages).put("r", it.rang).put("t", it.lastTime)
+                )
+            }
+        })
+    }.toString()
+
+    fun decodeStats(json: String?): TodayStats = parse(json) { o ->
+        val sources = o.optJSONArray("sources")?.let { arr ->
+            (0 until arr.length()).map { i ->
+                val s = arr.getJSONObject(i)
+                SourceStats(
+                    key = s.getString("key"), pkg = s.optString("pkg"), name = s.optString("name"),
+                    messages = s.optInt("n"), rang = s.optInt("r"), lastTime = s.optLong("t"),
+                )
+            }.associateBy { it.key }
+        }.orEmpty()
+        TodayStats(o.optInt("day"), o.optInt("silenced"), sources)
+    } ?: TodayStats()
 
     private inline fun <reified E : Enum<E>> enumOr(name: String, fallback: E): E =
         enumValues<E>().firstOrNull { it.name == name } ?: fallback

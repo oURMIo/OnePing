@@ -12,18 +12,13 @@ import com.oneping.engine.NotificationParser
  * The heart of OnePing. It:
  * - judges every new notification with the [CooldownEngine],
  * - silences repeats: cancels the original (the system stops its sound immediately) and
- *   re-posts a silent copy via [MirrorNotifier],
+ *   shows the source's silent conversation card via [SilentCards],
  * - seeds the engine with notifications that already exist,
- * - resets cooldowns when the user opens/dismisses notifications.
+ * - forgets / resets a source when the user has seen it.
  */
 class ListenerService : NotificationListenerService() {
 
-    private lateinit var mirror: MirrorNotifier
-
-    override fun onCreate() {
-        super.onCreate()
-        mirror = MirrorNotifier(this)
-    }
+    private val cards get() = OnePingApp.cards(this)
 
     override fun onListenerConnected() {
         OnePingApp.listenerConnected.value = true
@@ -45,21 +40,26 @@ class ListenerService : NotificationListenerService() {
     override fun onNotificationPosted(sbn: StatusBarNotification, rankingMap: RankingMap?) {
         try {
             val engine = OnePingApp.engine(this)
+            val snapshot = NotificationParser.parse(sbn, packageName) ?: return
             val importance = rankingMap?.let { map ->
                 Ranking().takeIf { map.getRanking(sbn.key, it) }?.importance
             } ?: NotificationManager.IMPORTANCE_DEFAULT
-            val audible = importance >= NotificationManager.IMPORTANCE_DEFAULT
+            val canSilence = cards.canPost()
+            val note = if (canSilence) "" else "can't show cards, NOT silenced"
+            val verdict = engine.decide(snapshot, importance >= NotificationManager.IMPORTANCE_DEFAULT, note)
+            if (engine.isMonitored(snapshot.pkg)) cards.record(snapshot)
 
-            val snapshot = NotificationParser.parse(sbn, packageName) ?: return
-            val canSilence = mirror.canPost()
-            val note = if (canSilence) "" else "can't post copies, NOT silenced"
-            val verdict = engine.decide(snapshot, audible, note)
             when {
                 verdict == CooldownEngine.Verdict.SILENCE && canSilence -> {
-                    cancelNotification(sbn.key) // stops the sound/vibration already in progress
-                    mirror.show(sbn, snapshot)
+                    // Cancel every original of this source (stops the sound at once); the card
+                    // shows the whole conversation instead.
+                    activeNotifications.orEmpty()
+                        .filter { it.packageName == sbn.packageName }
+                        .filter { NotificationParser.parse(it, packageName)?.key == snapshot.key }
+                        .forEach { cancelNotification(it.key) }
+                    cards.show(sbn, snapshot)
                 }
-                verdict == CooldownEngine.Verdict.PASS -> mirror.remove(sbn.key) // the original is visible again
+                verdict == CooldownEngine.Verdict.PASS -> cards.hide(snapshot.key) // the original is visible
             }
         } catch (t: Throwable) {
             Log.w(OnePingApp.TAG, "Listener failed on ${sbn.key}", t)
@@ -67,23 +67,23 @@ class ListenerService : NotificationListenerService() {
     }
 
     override fun onNotificationRemoved(sbn: StatusBarNotification, rankingMap: RankingMap?, reason: Int) {
-        val engine = OnePingApp.engine(this)
-        val settings = engine.settings
-        if (!settings.resetOnUserDismiss) return
-        val why = when (reason) {
-            REASON_CLICK -> "notification opened"
-            REASON_CANCEL, REASON_CANCEL_ALL -> "notification dismissed"
-            // For our own copies APP_CANCEL means *we* removed it, which says nothing about the user.
-            REASON_APP_CANCEL -> "app cleared it (read)"
-                .takeIf { settings.resetOnAppCancel && sbn.packageName != packageName }
-            else -> null // includes REASON_LISTENER_CANCEL: our own fallback cancels
+        val own = sbn.packageName == packageName
+        val seen = when (reason) {
+            REASON_CLICK -> "opened"
+            REASON_CANCEL, REASON_CANCEL_ALL -> "dismissed"
+            // The app cleared its own notification (chat read). For our cards it means *we* hid it.
+            REASON_APP_CANCEL -> "read".takeIf { !own }
+            else -> null // includes REASON_LISTENER_CANCEL: our own cancellations
         } ?: return
-        // Our silent copies: the user opened/dismissed them, so reset the original source.
-        val snapshot = if (sbn.packageName == packageName) {
-            mirror.sourceOf(sbn)
+
+        val (key, pkg, name) = if (own) {
+            cards.sourceOf(sbn) ?: return
         } else {
-            NotificationParser.parse(sbn, packageName)
-        } ?: return
-        engine.reset(snapshot, why)
+            val s = NotificationParser.parse(sbn, packageName) ?: return
+            SilentCards.Source(s.key, s.pkg, s.name)
+        }
+        cards.forget(key)
+        val engine = OnePingApp.engine(this)
+        if (engine.settings.resetWhenSeen) engine.reset(key, pkg, name, seen)
     }
 }

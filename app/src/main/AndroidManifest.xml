@@ -2,7 +2,7 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
     <!-- No INTERNET permission: all data stays on the device. -->
-    <!-- Silenced notifications are re-posted as silent copies. -->
+    <!-- Silenced notifications are collected into silent conversation cards. -->
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
 
@@ -33,7 +33,7 @@
         </activity>
 
 
-        <!-- Detects repeats, silences them (cancel + silent copy) and handles resets. -->
+        <!-- Detects repeats, silences them (cancel + silent card) and handles resets. -->
         <service
             android:name=".service.ListenerService"
             android:exported="true"
@@ -41,6 +41,23 @@
             android:permission="android.permission.BIND_NOTIFICATION_LISTENER_SERVICE">
             <intent-filter>
                 <action android:name="android.service.notification.NotificationListenerService" />
+            </intent-filter>
+        </service>
+
+        <!-- "Mute 1 h" / "Always ring" buttons on silent cards. -->
+        <receiver
+            android:name=".service.CardActionReceiver"
+            android:exported="false" />
+
+        <!-- Quick Settings tile: pause for 1 hour. -->
+        <service
+            android:name=".service.PauseTileService"
+            android:exported="true"
+            android:icon="@drawable/ic_stat_oneping"
+            android:label="@string/tile_label"
+            android:permission="android.permission.BIND_QUICK_SETTINGS_TILE">
+            <intent-filter>
+                <action android:name="android.service.quicksettings.action.QS_TILE" />
             </intent-filter>
         </service>
     </application>

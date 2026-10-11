@@ -4,6 +4,13 @@ import android.app.Notification
 import android.service.notification.StatusBarNotification
 import androidx.core.app.NotificationCompat
 
+/** One message as shown in a notification. [sender] is null for the device owner. */
+data class ParsedMessage(
+    val sender: String?,
+    val text: String,
+    val time: Long,
+)
+
 /** What we could read out of one notification. */
 data class Snapshot(
     val pkg: String,
@@ -22,6 +29,8 @@ data class Snapshot(
     val textFingerprint: Int,
     /** Notification.when, used when there is no MessagingStyle. */
     val postedWhen: Long,
+    /** The messages visible in this notification, oldest first (for the silent card's history). */
+    val messages: List<ParsedMessage> = emptyList(),
 )
 
 object NotificationParser {
@@ -88,6 +97,20 @@ object NotificationParser {
             latest?.let { append('\n').append(it.text) }
         }
 
+        val parsedMessages = if (messages.isNotEmpty()) {
+            messages.sortedBy { it.timestamp }.map { m ->
+                ParsedMessage(
+                    sender = if (isSelf(m)) null else m.person?.name?.toString(),
+                    text = m.text?.toString().orEmpty(),
+                    time = m.timestamp,
+                )
+            }
+        } else {
+            val body = (extras.getCharSequence(Notification.EXTRA_BIG_TEXT)
+                ?: extras.getCharSequence(Notification.EXTRA_TEXT))?.toString()
+            listOfNotNull(body?.let { ParsedMessage(title ?: name, it, n.`when`) })
+        }
+
         return Snapshot(
             pkg = sbn.packageName,
             key = "${sbn.packageName}|$sourceId",
@@ -98,6 +121,7 @@ object NotificationParser {
             latestFromSelf = latest != null && isSelf(latest),
             textFingerprint = text.hashCode(),
             postedWhen = n.`when`,
+            messages = parsedMessages,
         )
     }
 
